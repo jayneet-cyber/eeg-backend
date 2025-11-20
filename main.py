@@ -1,3 +1,8 @@
+import matplotlib
+# OPTIMIZATION 3: Set backend to 'Agg' before importing pyplot
+# This prevents "GUI not found" errors and optimizes for server-side image generation
+matplotlib.use('Agg')
+
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,10 +14,10 @@ import os
 import base64
 import textwrap
 from io import BytesIO
+import shutil
 
 app = FastAPI()
 
-# Allow Lovable to talk to this server
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -25,18 +30,31 @@ app.add_middleware(
 def read_root():
     return {"status": "EEG Server is Running!"}
 
+# OPTIMIZATION 1: Changed 'async def' to 'def'
+# This creates a synchronous function that FastAPI runs in a separate thread pool.
+# This prevents the heavy MNE math from blocking the main server loop.
 @app.post("/analyze")
-async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
+def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
+    
     # 1. SAVE UPLOADS TEMP
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".cnt") as tmp_cnt:
-        tmp_cnt.write(await cnt_file.read())
+    # Using standard file handling instead of async read/write for sync function
+    try:
+        # Create temp files
+        tmp_cnt = tempfile.NamedTemporaryFile(delete=False, suffix=".cnt")
+        tmp_cnt.close() # Close so we can write to it safely
         tmp_cnt_path = tmp_cnt.name
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".exp") as tmp_exp:
-        tmp_exp.write(await exp_file.read())
+        tmp_exp = tempfile.NamedTemporaryFile(delete=False, suffix=".exp")
+        tmp_exp.close()
         tmp_exp_path = tmp_exp.name
 
-    try:
+        # Write content using shutil for efficiency
+        with open(tmp_cnt_path, "wb") as buffer:
+            shutil.copyfileobj(cnt_file.file, buffer)
+            
+        with open(tmp_exp_path, "wb") as buffer:
+            shutil.copyfileobj(exp_file.file, buffer)
+
         # 2. LOAD DATA
         raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         
@@ -64,10 +82,11 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         easiest_txt = "N/A"
         toughest_txt = "N/A"
         if reaction_times:
-            reaction_times.sort()
-            best = reaction_times[0]
+            # Using min/max is slightly faster O(n) than sort O(n log n)
+            best = min(reaction_times, key=lambda x: x[0])
+            worst = max(reaction_times, key=lambda x: x[0])
+            
             easiest_txt = f"Trial {best[1]}: '{best[2]}' ({best[0]}ms)"
-            worst = reaction_times[-1]
             toughest_txt = f"Trial {worst[1]}: '{worst[2]}' ({worst[0]}ms)"
 
         # 4. EVENTS
@@ -86,21 +105,17 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         event_ids = {'Target': 1, 'Non-Target': 2}
 
         # 5. FILTER & EPOCH
-        raw.filter(0.1, 30.0, picks='eeg', verbose=False)
+        # OPTIMIZATION 2: n_jobs=-1 uses all available CPU cores for filtering
+        raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
+        
         epochs = mne.Epochs(raw, custom_events, event_ids, tmin=-0.2, tmax=0.6, baseline=(None, 0), picks='eeg', preload=True, verbose=False)
         
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT (REPORT STYLE - FIXED SPACING)
-        
-        # ### LAYOUT CONTROL: CANVAS HEIGHT ###
-        # figsize=(12, 30):
-        # - 12 is width (standard)
-        # - 30 is HEIGHT. Increase this (e.g., to 35 or 40) if you need more vertical room.
+        # 6. PLOT
         fig, ax = plt.subplots(3, 1, figsize=(12, 30))
         
-        # --- MAIN HEADER ---
         main_title = "Neuro-UX: B2B Dashboard Analysis"
         summary_text = (
             "B2B Dashboard Analysis Summary\n\n"
@@ -112,85 +127,48 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
             "This validates your design with hard biological data, not just opinions."
         )
         
-        # Place Header at absolute top
         fig.text(0.5, 0.97, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
         fig.text(0.5, 0.93, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
 
-        # Definitions
         sections = [
             {
-                "comp": "P100",
-                "ch": "OZ",
+                "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
                 "title": "A. P100 (The 'First Glance' Test)",
-                "desc": "Measures how physically overwhelming the screen is—telling us if the sheer amount of clutter is tiring the user's eyes before they even start reading.",
-                "window": (0.08, 0.14),
-                "color": "green"
+                "desc": "Measures how physically overwhelming the screen is—telling us if the sheer amount of clutter is tiring the user's eyes before they even start reading."
             },
             {
-                "comp": "N200",
-                "ch": "FZ",
+                "comp": "N200", "ch": "FZ", "color": "yellow", "window": (0.20, 0.30),
                 "title": "B. N200 (The 'Confusion' Test)",
-                "desc": "Measures mental friction—revealing the exact moment a user gets stuck or frustrated because they can’t instantly find the insight they need in a wall of numbers.",
-                "window": (0.20, 0.30),
-                "color": "yellow"
+                "desc": "Measures mental friction—revealing the exact moment a user gets stuck or frustrated because they can’t instantly find the insight they need in a wall of numbers."
             },
             {
-                "comp": "P300",
-                "ch": "PZ",
+                "comp": "P300", "ch": "PZ", "color": "red", "window": (0.30, 0.50),
                 "title": "C. P300 (The 'Confidence' Test)",
-                "desc": "Measures the 'Aha!' moment—proving the user has successfully understood the data and is ready to make a confident decision, rather than hesitating.",
-                "window": (0.30, 0.50),
-                "color": "red"
+                "desc": "Measures the 'Aha!' moment—proving the user has successfully understood the data and is ready to make a confident decision, rather than hesitating."
             }
         ]
         
         for i, sec in enumerate(sections):
             channel = sec["ch"]
-            
             if channel in raw.ch_names:
-                # Plot Graph
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
-                    picks=channel, 
-                    axes=ax[i], 
-                    show=False, 
-                    show_sensors=False, 
-                    legend='upper right' if i == 0 else None,
-                    title=None
+                    picks=channel, axes=ax[i], show=False, show_sensors=False, 
+                    legend='upper right' if i == 0 else None, title=None
                 )
                 
-                # Highlight Window
                 ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
                 
-                # --- TEXT BOXES (FIXED POSITIONS) ---
+                ax[i].text(0.5, 1.4, sec["title"], transform=ax[i].transAxes, ha='center', va='bottom', fontsize=18, weight='bold', color='#2c3e50')
                 
-                # ### LAYOUT CONTROL: TITLE POSITION ###
-                # '1.4' means 140% of the graph height. 
-                # Increase to 1.5 or 1.6 to push title HIGHER.
-                ax[i].text(0.5, 1.4, sec["title"], 
-                         transform=ax[i].transAxes, 
-                         ha='center', va='bottom', 
-                         fontsize=18, weight='bold', color='#2c3e50')
-                
-                # ### LAYOUT CONTROL: DESCRIPTION POSITION ###
-                # '1.15' means 115% of the graph height.
-                # Increase to 1.2 or 1.3 to push description HIGHER.
                 wrapped_desc = textwrap.fill(sec["desc"], width=85)
-                ax[i].text(0.5, 1.15, wrapped_desc, 
-                         transform=ax[i].transAxes, 
-                         ha='center', va='top', 
-                         fontsize=12, color='#7f8c8d',
+                ax[i].text(0.5, 1.15, wrapped_desc, transform=ax[i].transAxes, ha='center', va='top', fontsize=12, color='#7f8c8d',
                          bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="#bdc3c7", alpha=0.8))
 
-        # ADJUST LAYOUT
-        # ### LAYOUT CONTROL: VERTICAL SPACING ###
-        # 'hspace=0.8' adds the white gap between graphs. 
-        # Increase to 1.0 or 1.2 if the text is still overlapping the graph above it.
-        plt.subplots_adjust(top=0.88, hspace=0.8, bottom=0.05)
+        plt.subplots_adjust(top=0.82, hspace=0.8, bottom=0.05)
         
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        # dpi=150 ensures crisp text
         plt.savefig(buf, format="png", bbox_inches='tight', dpi=150) 
         plt.close(fig)
         buf.seek(0)
@@ -204,10 +182,14 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         }
 
     except Exception as e:
+        # Clean up explicitly on error
         return {"error": str(e)}
     finally:
-        if os.path.exists(tmp_cnt_path): os.remove(tmp_cnt_path)
-        if os.path.exists(tmp_exp_path): os.remove(tmp_exp_path)
+        # Cleanup temp files
+        if 'tmp_cnt_path' in locals() and os.path.exists(tmp_cnt_path): 
+            os.remove(tmp_cnt_path)
+        if 'tmp_exp_path' in locals() and os.path.exists(tmp_exp_path): 
+            os.remove(tmp_exp_path)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
