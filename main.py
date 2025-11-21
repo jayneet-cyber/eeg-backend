@@ -96,12 +96,10 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # 5. FILTER & EPOCH (With Relaxed Artifact Rejection)
+        # 5. FILTER & EPOCH (No Artifact Rejection)
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
         
-        # ADJUSTMENT: Relaxed threshold from 100e-6 to 200e-6 to keep more data
-        reject_criteria = dict(eeg=200e-6) 
-        
+        # Create epochs WITHOUT artifact rejection to keep all trials
         epochs = mne.Epochs(
             raw, 
             custom_events, 
@@ -111,21 +109,23 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             baseline=(None, 0), 
             picks='eeg', 
             preload=True, 
-            reject=reject_criteria, 
             verbose=False
         )
+        
+        # Log trial counts for debugging
+        print(f"DEBUG: Total epochs: {len(epochs)}, Target={len(epochs['Target'])}, Non-Target={len(epochs['Non-Target'])}")
         
         if len(epochs) == 0:
             return {"error": "All trials were rejected due to artifacts (too much noise)."}
 
+        # Get evoked responses (these are in VOLTS by default)
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT (REFINED GRID LAYOUT WITH FIXES)
+        # 6. PLOT (REFINED GRID LAYOUT)
         
         fig = plt.figure(figsize=(12, 32)) 
         
-        # GridSpec: Rows 1,3,5 (Text) are height 1.0. Rows 2,4,6 (Graphs) are height 2.5.
         gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], hspace=0.5)
 
         # --- ROW 0: MAIN HEADER ---
@@ -167,27 +167,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         row_indices = [(1, 2), (3, 4), (5, 6)]
 
-        # Calculate dynamic y-limits based on actual data
-        # FIX: We manually scale by 1e6 HERE just for the Y-axis MATH, 
-        # but we do NOT modify the 'evoked' objects themselves.
-        all_data = np.concatenate([
-            evoked_target.get_data(picks=sec["ch"]).flatten() * 1e6
-            if sec["ch"] in evoked_target.ch_names else np.array([0])
-            for sec in sections
-        ] + [
-            evoked_nontarget.get_data(picks=sec["ch"]).flatten() * 1e6
-            if sec["ch"] in evoked_nontarget.ch_names else np.array([0])
-            for sec in sections
-        ])
-        
-        # Set y-limits with 20% padding
-        y_min = all_data.min() * 1.2 if all_data.min() < 0 else all_data.min() * 0.8
-        y_max = all_data.max() * 1.2
-        
-        # Ensure reasonable limits (fallback to defaults if data is too flat)
-        if abs(y_max - y_min) < 1:
-            y_min, y_max = -10, 35
-
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
@@ -196,7 +175,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             ax_text = fig.add_subplot(gs[text_row])
             ax_text.axis('off') 
             
-            # Centered text with better vertical positioning
             ax_text.text(0.5, 0.75, sec["title"], ha='center', fontsize=20, weight='bold', color='#2c3e50')
             ax_text.text(0.5, 0.25, textwrap.fill(sec["desc"], width=100), ha='center', va='top', fontsize=14, color='#7f8c8d')
 
@@ -204,7 +182,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # Plot with legend on all graphs for clarity
+                # CRITICAL: Use scalings parameter to display in microvolts
+                # This tells MNE to scale the voltage data (which is in volts) to microvolts for display
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
@@ -212,24 +191,23 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     show=False, 
                     show_sensors=False, 
                     legend='upper right',
-                    title=None
+                    title=None,
+                    scalings=dict(eeg=1e6)  # Scale from volts to microvolts
                 )
                 
-                # MNE plots in uV automatically, so we don't need to change data.
-                # Just ensure tick labels are simple numbers.
+                # Remove scientific notation
                 ax_graph.ticklabel_format(style='plain', axis='y')
                 
                 # Highlight component time window
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
                 
-                # FIXED: Use dynamic y-limits (calculated in uV above)
+                # Set x-limits only - let y-axis auto-scale
                 ax_graph.set_xlim(-0.2, 0.6)
-                ax_graph.set_ylim(y_min, y_max)
                 
                 # Add zero line for reference
                 ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
                 
-                # Styling - Lighter Grid
+                # Styling
                 ax_graph.spines['top'].set_visible(False)
                 ax_graph.spines['right'].set_visible(False)
                 ax_graph.grid(True, linestyle=':', alpha=0.4)
@@ -249,9 +227,18 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                               ha='center', va='center', fontsize=14, color='red')
                 ax_graph.axis('off')
 
-        # Add metadata footer
-        fig.text(0.5, 0.01, f'Total Epochs: {len(epochs)} | Target: {len(epochs["Target"])} | Non-Target: {len(epochs["Non-Target"])}', 
-                 ha='center', fontsize=10, style='italic', color='#7f8c8d')
+        # Add metadata footer with trial balance info
+        target_count = len(epochs["Target"])
+        nontarget_count = len(epochs["Non-Target"])
+        balance_note = ""
+        
+        # Alert if severely imbalanced (less than 10 trials in either condition)
+        if target_count < 10 or nontarget_count < 10:
+            balance_note = " ⚠️ Low trial count detected"
+        
+        fig.text(0.5, 0.01, 
+                f'Total Epochs: {len(epochs)} | Target: {target_count} | Non-Target: {nontarget_count}{balance_note}', 
+                ha='center', fontsize=10, style='italic', color='#7f8c8d')
 
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
@@ -267,9 +254,11 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "toughest": toughest_txt,
             "metadata": {
                 "total_epochs": len(epochs),
-                "target_epochs": len(epochs["Target"]),
-                "nontarget_epochs": len(epochs["Non-Target"]),
-                "channels_analyzed": [sec["ch"] for sec in sections if sec["ch"] in raw.ch_names]
+                "target_epochs": target_count,
+                "nontarget_epochs": nontarget_count,
+                "channels_analyzed": [sec["ch"] for sec in sections if sec["ch"] in raw.ch_names],
+                "balance_warning": target_count < 10 or nontarget_count < 10,
+                "artifact_rejection": "disabled"
             }
         }
 
