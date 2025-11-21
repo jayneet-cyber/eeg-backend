@@ -1,5 +1,5 @@
 import matplotlib
-# OPTIMIZATION: Agg backend for server-side rendering
+# OPTIMIZATION 3: Set backend to 'Agg' to prevent GUI errors on headless servers
 matplotlib.use('Agg')
 
 import uvicorn
@@ -31,41 +31,40 @@ app.add_middleware(
 def read_root():
     return {"status": "EEG Server is Running!"}
 
+# OPTIMIZATION 1: Use synchronous 'def' to run in thread pool (prevents blocking)
 @app.post("/analyze")
 def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
     
-    tmp_cnt_path = None
-    tmp_exp_path = None
-    
+    # --- 1. FILE HANDLING ---
+    # Save uploads to temporary files on disk (MNE requires file paths)
     try:
-        # 1. SAVE UPLOADS TEMP
-        # Create and manage temporary files securely
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".cnt") as tmp_cnt:
-            tmp_cnt_path = tmp_cnt.name
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".exp") as tmp_exp:
-            tmp_exp_path = tmp_exp.name
+        tmp_cnt = tempfile.NamedTemporaryFile(delete=False, suffix=".cnt")
+        tmp_cnt.close()
+        tmp_cnt_path = tmp_cnt.name
 
+        tmp_exp = tempfile.NamedTemporaryFile(delete=False, suffix=".exp")
+        tmp_exp.close()
+        tmp_exp_path = tmp_exp.name
+
+        # Write content using shutil for efficiency
         with open(tmp_cnt_path, "wb") as buffer:
             shutil.copyfileobj(cnt_file.file, buffer)
             
         with open(tmp_exp_path, "wb") as buffer:
             shutil.copyfileobj(exp_file.file, buffer)
 
-        # 2. LOAD DATA
-        # MNE's read_raw_cnt loads the Neuroscan .cnt file
+        # --- 2. LOAD & PARSE ---
         raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         
-        # 3. PARSE EXP (Get trial type and Reaction Time info)
+        # Parse .exp file to map Trial IDs -> Conditions (R vs C) and get Reaction Times
         trial_type_map = {}
         reaction_times = []
         
         with open(tmp_exp_path, 'r') as f:
             lines = f.readlines()
-            # Assuming trial data starts after the 8th line
-            for line in lines[8:]: 
+            for line in lines[8:]: # Skip 8 header lines
                 parts = line.strip().split('\t')
-                if len(parts) < 7: parts = line.strip().split() # Handle space-delimited fallback
-                
+                if len(parts) < 7: parts = line.strip().split() # Fallback split
                 if len(parts) >= 7:
                     t_id = parts[0].strip()      # Trial ID
                     t_name = parts[1].strip()    # Trial Name/Stimulus
@@ -76,27 +75,27 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                         t_lat = 1000 # Use a high value for missing/invalid RT
 
                     trial_type_map[t_id] = t_type
-                    # Collect valid RTs for "Target" trials (assuming R means required response)
+                    # Collect valid reaction times for Targets (R)
                     if t_type == 'R' and t_lat < 1000:
                         reaction_times.append((t_lat, t_id, t_name))
 
-        # Frontend Text Logic for RT Extremes
+        # --- 3. CALCULATE METRICS (Easiest/Toughest) ---
         easiest_txt = "N/A"
         toughest_txt = "N/A"
         if reaction_times:
-            best = min(reaction_times, key=lambda x: x[0])
-            worst = max(reaction_times, key=lambda x: x[0])
+            best = min(reaction_times, key=lambda x: x[0]) # Min latency
+            worst = max(reaction_times, key=lambda x: x[0]) # Max latency
+            
             easiest_txt = f"Trial {best[1]}: '{best[2]}' ({best[0]}ms)"
             toughest_txt = f"Trial {worst[1]}: '{worst[2]}' ({worst[0]}ms)"
 
-        # 4. EVENTS (Map .cnt annotations to .exp trial types)
+        # --- 4. CREATE MNE EVENTS ---
         new_events_list = []
         for annot in raw.annotations:
             clean_id = str(annot['description']).strip()
             sType = trial_type_map.get(clean_id, "Unknown")
             if sType == "Unknown": continue
-            code = 1 if sType == 'R' else 2 # 1=Target (Response Req.), 2=Non-Target
-            # [sample_index, 0, event_code]
+            code = 1 if sType == 'R' else 2 # 1=Target, 2=Non-Target
             new_events_list.append([raw.time_as_index(annot['onset'])[0], 0, code])
 
         if not new_events_list:
@@ -105,8 +104,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # 5. FILTER & EPOCH (NO ARTIFACT REJECTION)
-        # Apply a bandpass filter (0.1 to 30 Hz) typical for ERP analysis
+        # --- 5. PREPROCESSING (Filter & Epoch) ---
+        # OPTIMIZATION 2: n_jobs=-1 uses all CPU cores
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
         
         # Create epochs: tmin=-200ms, tmax=600ms, baseline to pre-stimulus period
@@ -126,24 +125,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         # Get evoked responses (averaged ERPs)
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
-        
-        target_count = len(epochs["Target"])
-        nontarget_count = len(epochs["Non-Target"])
-        
-        if len(epochs) == 0:
-            raise HTTPException(status_code=400, detail="No epochs were successfully created. Check event timing or file format.")
 
-        # 6. PLOT (REFINED GRID LAYOUT for 3-Component ERP Analysis)
+        # --- 6. PLOTTING (REPORT STYLE) ---
         
-        fig = plt.figure(figsize=(12, 32)) 
+        # CONFIG: Figure Size
+        # height=30 gives us a long, scrollable report format
+        fig, ax = plt.subplots(3, 1, figsize=(12, 30))
         
-        # Define grid for 7 rows: Header, Text A, Graph A, Text B, Graph B, Text C, Graph C
-        gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], hspace=0.5)
-
-        # --- ROW 0: MAIN HEADER ---
-        ax_header = fig.add_subplot(gs[0])
-        ax_header.axis('off') 
-        
+        # CONTENT: Header Text
         main_title = "Neuro-UX: B2B Dashboard Analysis"
         summary_text = (
             "B2B Dashboard Analysis Summary\n\n"
@@ -153,10 +142,12 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "A faster P300 latency and higher P300 amplitude for 'Target' trials indicate superior design and lower cognitive load."
         )
         
-        ax_header.text(0.5, 0.85, main_title, ha='center', fontsize=26, weight='bold', color='#2c3e50')
-        ax_header.text(0.5, 0.45, textwrap.fill(summary_text, width=90), ha='center', va='top', fontsize=14, style='italic', color='#34495e')
+        # PLACE HEADER
+        # 0.97 is near the very top edge. 0.93 is slightly below it.
+        fig.text(0.5, 0.97, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
+        fig.text(0.5, 0.93, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
 
-        # Component Definitions
+        # CONTENT: Section Definitions
         sections = [
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
@@ -175,8 +166,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             }
         ]
         
-        row_indices = [(1, 2), (3, 4), (5, 6)]
-
+        # LOOP: Create graphs
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
@@ -190,9 +180,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
 
             # --- GRAPH ROW ---
             if channel in raw.ch_names:
-                ax_graph = fig.add_subplot(gs[graph_row])
-                
-                # Plot the ERP comparison
+                # Plot Graph lines
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
@@ -204,46 +192,27 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     scalings=dict(eeg=1e6) # CRITICAL: Display in microvolts (µV)
                 )
                 
-                # Formatting and Highlighting
-                ax_graph.ticklabel_format(style='plain', axis='y')
-                ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
-                ax_graph.set_xlim(-0.2, 0.6)
-                ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
+                # Highlight Window (Colored background)
+                ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
                 
-                # Styling
-                ax_graph.spines['top'].set_visible(False)
-                ax_graph.spines['right'].set_visible(False)
-                ax_graph.grid(True, linestyle=':', alpha=0.4)
-                ax_graph.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
-                ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
-                ax_graph.tick_params(axis='both', which='major', labelsize=10)
+                # --- TEXT PLACEMENT ---
+                # Title Position: 1.4 (High above graph)
+                ax[i].text(0.5, 1.4, sec["title"], transform=ax[i].transAxes, ha='center', va='bottom', fontsize=18, weight='bold', color='#2c3e50')
                 
-                # Add component label on graph
-                ax_graph.text(0.02, 0.98, f'{sec["comp"]} @ {channel}', 
-                              transform=ax_graph.transAxes, 
-                              fontsize=11, weight='bold', 
-                              verticalalignment='top', 
-                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            else:
-                # Handle case where required channel is not present
-                ax_graph = fig.add_subplot(gs[graph_row])
-                ax_graph.text(0.5, 0.5, f'Channel {channel} not found in data', 
-                              ha='center', va='center', fontsize=14, color='red')
-                ax_graph.axis('off')
+                # Description Position: 1.15 (Between title and graph)
+                wrapped_desc = textwrap.fill(sec["desc"], width=85)
+                ax[i].text(0.5, 1.15, wrapped_desc, transform=ax[i].transAxes, ha='center', va='top', fontsize=12, color='#7f8c8d',
+                         bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="#bdc3c7", alpha=0.8))
 
-        # Add metadata footer with trial balance info
-        balance_note = ""
-        # Alert if severely imbalanced (less than 10 trials in either condition)
-        if target_count < 10 or nontarget_count < 10:
-            balance_note = " ⚠️ LOW TRIAL COUNT WARNING"
+        # --- LAYOUT ADJUSTMENT ---
+        # top=0.78: Pushes graphs down to make room for the Main Header text.
+        # hspace=0.8: Adds vertical gap between graphs A, B, and C.
+        plt.subplots_adjust(top=0.78, hspace=0.8, bottom=0.05)
         
-        fig.text(0.5, 0.01, 
-                 f'Total Epochs: {len(epochs)} | Target: {target_count} | Non-Target: {nontarget_count}{balance_note}', 
-                 ha='center', fontsize=10, style='italic', color='#7f8c8d')
-
-        # 7. CONVERT TO IMAGE (PNG)
+        # --- 7. EXPORT ---
         buf = BytesIO()
-        plt.savefig(buf, format="png", bbox_inches='tight', dpi=300) 
+        # dpi=150 ensures text is crisp
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=150) 
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
@@ -264,14 +233,10 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         }
 
     except Exception as e:
-        # Log the error for debugging
-        print(f"An error occurred: {e}")
-        # Raise a 500 HTTPException for external facing errors
-        raise HTTPException(status_code=500, detail=f"Server analysis error: {str(e)}")
-        
+        return {"error": str(e)}
     finally:
-        # Clean up temporary files
-        if tmp_cnt_path and os.path.exists(tmp_cnt_path): 
+        # Cleanup temp files to save space
+        if 'tmp_cnt_path' in locals() and os.path.exists(tmp_cnt_path): 
             os.remove(tmp_cnt_path)
         if tmp_exp_path and os.path.exists(tmp_exp_path): 
             os.remove(tmp_exp_path)
