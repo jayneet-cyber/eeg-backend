@@ -118,27 +118,15 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         if len(epochs) == 0:
             return {"error": "All trials were rejected due to artifacts (too much noise)."}
 
-        # CRITICAL FIX: Convert to microvolts for proper visualization
+        # FIX: Removed manual scaling block. MNE handles Volts -> Microvolts automatically.
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
-        
-        # Scale to microvolts (MNE uses volts internally)
-        evoked_target = mne.EvokedArray(
-            evoked_target.data * 1e6,
-            evoked_target.info,
-            tmin=evoked_target.times[0]
-        )
-        evoked_nontarget = mne.EvokedArray(
-            evoked_nontarget.data * 1e6,
-            evoked_nontarget.info,
-            tmin=evoked_nontarget.times[0]
-        )
 
         # 6. PLOT (REFINED GRID LAYOUT WITH FIXES)
         
-        fig = plt.figure(figsize=(12, 32))  # Slightly taller for better spacing
+        fig = plt.figure(figsize=(12, 32)) 
         
-        # FIXED: Increased text row heights (1.0 instead of 0.7) and more hspace
+        # GridSpec: Rows 1,3,5 (Text) are height 1.0. Rows 2,4,6 (Graphs) are height 2.5.
         gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], hspace=0.5)
 
         # --- ROW 0: MAIN HEADER ---
@@ -180,7 +168,26 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         row_indices = [(1, 2), (3, 4), (5, 6)]
 
-        # No need to calculate y-limits - let MNE/Matplotlib auto-scale for optimal display
+        # Calculate dynamic y-limits based on actual data
+        # FIX: We manually scale by 1e6 HERE just for the Y-axis MATH, 
+        # but we do NOT modify the 'evoked' objects themselves.
+        all_data = np.concatenate([
+            evoked_target.get_data(picks=sec["ch"]).flatten() * 1e6
+            if sec["ch"] in evoked_target.ch_names else np.array([0])
+            for sec in sections
+        ] + [
+            evoked_nontarget.get_data(picks=sec["ch"]).flatten() * 1e6
+            if sec["ch"] in evoked_nontarget.ch_names else np.array([0])
+            for sec in sections
+        ])
+        
+        # Set y-limits with 20% padding
+        y_min = all_data.min() * 1.2 if all_data.min() < 0 else all_data.min() * 0.8
+        y_max = all_data.max() * 1.2
+        
+        # Ensure reasonable limits (fallback to defaults if data is too flat)
+        if abs(y_max - y_min) < 1:
+            y_min, y_max = -10, 35
 
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
@@ -209,14 +216,16 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     title=None
                 )
                 
-                # Remove scientific notation from y-axis
+                # MNE plots in uV automatically, so we don't need to change data.
+                # Just ensure tick labels are simple numbers.
                 ax_graph.ticklabel_format(style='plain', axis='y')
                 
                 # Highlight component time window
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
                 
-                # Set x-limits only - let y-axis auto-scale for optimal display
+                # FIXED: Use dynamic y-limits (calculated in uV above)
                 ax_graph.set_xlim(-0.2, 0.6)
+                ax_graph.set_ylim(y_min, y_max)
                 
                 # Add zero line for reference
                 ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
@@ -224,27 +233,26 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 # Styling - Lighter Grid
                 ax_graph.spines['top'].set_visible(False)
                 ax_graph.spines['right'].set_visible(False)
-                ax_graph.grid(True, linestyle=':', alpha=0.4)  # Even lighter grid
+                ax_graph.grid(True, linestyle=':', alpha=0.4)
                 ax_graph.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
                 ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
                 ax_graph.tick_params(axis='both', which='major', labelsize=10)
                 
                 # Add component label on graph
                 ax_graph.text(0.02, 0.98, f'{sec["comp"]} @ {channel}', 
-                             transform=ax_graph.transAxes, 
-                             fontsize=11, weight='bold',
-                             verticalalignment='top',
-                             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                              transform=ax_graph.transAxes, 
+                              fontsize=11, weight='bold', 
+                              verticalalignment='top', 
+                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
             else:
-                # FIXED: Provide feedback when channel is missing
                 ax_graph = fig.add_subplot(gs[graph_row])
                 ax_graph.text(0.5, 0.5, f'Channel {channel} not found in data', 
-                             ha='center', va='center', fontsize=14, color='red')
+                              ha='center', va='center', fontsize=14, color='red')
                 ax_graph.axis('off')
 
         # Add metadata footer
         fig.text(0.5, 0.01, f'Total Epochs: {len(epochs)} | Target: {len(epochs["Target"])} | Non-Target: {len(epochs["Non-Target"])}', 
-                ha='center', fontsize=10, style='italic', color='#7f8c8d')
+                 ha='center', fontsize=10, style='italic', color='#7f8c8d')
 
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
