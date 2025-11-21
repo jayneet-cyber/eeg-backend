@@ -177,7 +177,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         # --- LAYOUT ADJUSTMENT ---
         # top=0.78: Pushes graphs down to make room for the Main Header text.
         # hspace=0.8: Adds vertical gap between graphs A, B, and C.
-        plt.subplots_adjust(top=0.78, hspace=0.8, bottom=0.05)
+        plt.subplots_adjust(top=0.79, hspace=0.4, bottom=0.05)
         
         # --- 7. EXPORT ---
         buf = BytesIO()
