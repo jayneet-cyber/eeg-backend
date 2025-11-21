@@ -171,24 +171,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         row_indices = [(1, 2), (3, 4), (5, 6)]
 
-        # Calculate dynamic y-limits based on actual data
-        all_data = np.concatenate([
-            evoked_target.data[evoked_target.ch_names.index(sec["ch"])].flatten() 
-            if sec["ch"] in evoked_target.ch_names else np.array([0])
-            for sec in sections
-        ] + [
-            evoked_nontarget.data[evoked_nontarget.ch_names.index(sec["ch"])].flatten() 
-            if sec["ch"] in evoked_nontarget.ch_names else np.array([0])
-            for sec in sections
-        ])
-        
-        # Set y-limits with 20% padding
-        y_min = all_data.min() * 1.2 if all_data.min() < 0 else all_data.min() * 0.8
-        y_max = all_data.max() * 1.2
-        
-        # Ensure reasonable limits (fallback to defaults if data is too flat)
-        if abs(y_max - y_min) < 1:
-            y_min, y_max = -10, 35
+        # No need to calculate y-limits - let MNE/Matplotlib auto-scale for optimal display
 
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
@@ -220,9 +203,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 # Highlight component time window
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
                 
-                # FIXED: Use dynamic y-limits
+                # Set x-limits only - let y-axis auto-scale for optimal display
                 ax_graph.set_xlim(-0.2, 0.6)
-                ax_graph.set_ylim(y_min, y_max)
                 
                 # Add zero line for reference
                 ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
