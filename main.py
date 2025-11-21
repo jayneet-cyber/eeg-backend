@@ -129,8 +129,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         # PLACE HEADER
         # 0.97 is near the very top edge. 0.93 is slightly below it.
-        fig.text(0.5, 0.97, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
-        fig.text(0.5, 0.93, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
+        fig.text(0.5, 0.96, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
+        fig.text(0.5, 0.95, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
 
         # CONTENT: Section Definitions
         sections = [
