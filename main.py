@@ -96,11 +96,11 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # 5. FILTER & EPOCH (With Artifact Rejection)
+        # 5. FILTER & EPOCH (With Relaxed Artifact Rejection)
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
         
-        # Define rejection threshold (e.g., 100 microvolts)
-        reject_criteria = dict(eeg=100e-6) 
+        # ADJUSTMENT: Relaxed threshold from 100e-6 to 200e-6 to keep more data
+        reject_criteria = dict(eeg=200e-6) 
         
         epochs = mne.Epochs(
             raw, 
@@ -118,7 +118,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         if len(epochs) == 0:
             return {"error": "All trials were rejected due to artifacts (too much noise)."}
 
-        # FIX: Removed manual scaling block. MNE handles Volts -> Microvolts automatically.
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
