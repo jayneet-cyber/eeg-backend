@@ -7,7 +7,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import mne
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec # IMPORT NEW LAYOUT TOOL
+import matplotlib.gridspec as gridspec 
 import numpy as np
 import tempfile
 import os
@@ -96,30 +96,40 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # 5. FILTER & EPOCH
+        # 5. FILTER & EPOCH (With Artifact Rejection)
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
-        epochs = mne.Epochs(raw, custom_events, event_ids, tmin=-0.2, tmax=0.6, baseline=(None, 0), picks='eeg', preload=True, verbose=False)
         
+        # Define rejection threshold (e.g., 100 microvolts)
+        reject_criteria = dict(eeg=100e-6) 
+        
+        epochs = mne.Epochs(
+            raw, 
+            custom_events, 
+            event_ids, 
+            tmin=-0.2, 
+            tmax=0.6, 
+            baseline=(None, 0), 
+            picks='eeg', 
+            preload=True, 
+            reject=reject_criteria, # Add artifact rejection
+            verbose=False
+        )
+        
+        # Check if any epochs survived rejection
+        if len(epochs) == 0:
+             return {"error": "All trials were rejected due to artifacts (too much noise)."}
+
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # ============================================================
-        # 6. PLOTTING (GRID SPEC LAYOUT - THE PROFESSIONAL FIX)
-        # ============================================================
+        # 6. PLOT (GRID SPEC LAYOUT)
         
-        # We use a tall figure
         fig = plt.figure(figsize=(12, 28))
-        
-        # Define a grid with 7 rows.
-        # The 'height_ratios' define relative size:
-        # 0.8 = Header Space
-        # 0.4 = Text Space (Title + Desc)
-        # 2.0 = Graph Space
         gs = gridspec.GridSpec(7, 1, height_ratios=[0.8, 0.4, 2, 0.4, 2, 0.4, 2], hspace=0.4)
 
         # --- ROW 0: MAIN HEADER ---
         ax_header = fig.add_subplot(gs[0])
-        ax_header.axis('off') # Hide axis lines
+        ax_header.axis('off') 
         
         main_title = "Neuro-UX: B2B Dashboard Analysis"
         summary_text = (
@@ -154,19 +164,16 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             }
         ]
         
-        # Loop to create pairs of (Text Box, Graph Box)
-        # Rows indices: 1&2 for A, 3&4 for B, 5&6 for C
         row_indices = [(1, 2), (3, 4), (5, 6)]
 
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
             
-            # --- TEXT ROW (The "Box" above the graph) ---
+            # --- TEXT ROW ---
             ax_text = fig.add_subplot(gs[text_row])
-            ax_text.axis('off') # Hide box
+            ax_text.axis('off') 
             
-            # Plot Title & Desc in this dedicated space
             ax_text.text(0.0, 0.6, sec["title"], ha='left', fontsize=18, weight='bold', color='#2c3e50')
             ax_text.text(0.0, 0.2, textwrap.fill(sec["desc"], width=110), ha='left', va='top', fontsize=12, color='#7f8c8d')
 
@@ -188,11 +195,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 # Highlight
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1)
                 
-                # STRICT AXIS LIMITS (As requested)
+                # STRICT AXIS LIMITS
                 ax_graph.set_xlim(-0.2, 0.6)
-                ax_graph.set_ylim(-10, 35) # Fixed 35uV scale
                 
-                # Clean up the graph look
+                # Force Y-Axis to be consistent (-10 to 35 uV)
+                # Note: MNE uses Volts, so we scale by 1e6
+                ax_graph.set_ylim(-10, 35) 
+                
+                # Clean up graph
                 ax_graph.spines['top'].set_visible(False)
                 ax_graph.spines['right'].set_visible(False)
                 ax_graph.grid(True, linestyle='--', alpha=0.5)
