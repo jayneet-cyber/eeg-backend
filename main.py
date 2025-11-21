@@ -201,7 +201,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     show_sensors=False, 
                     legend='upper right',
                     title=None,
-                    scalings=dict(eeg=1e6)  # CRITICAL: Display in microvolts (µV)
+                    scalings=dict(eeg=1e6) # CRITICAL: Display in microvolts (µV)
                 )
                 
                 # Formatting and Highlighting
