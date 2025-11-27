@@ -291,7 +291,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend='upper left',
+        legend='upper right',
         title=None
     )
     
@@ -354,11 +354,19 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
             "confidence, where low confidence ratings often reflect a hard or uncertain "
             "cognitive pursuit."
         )
-        # Position at x=0.5 but add horizontal padding to create margin on right
-        ax.text(0.48, -0.32, footnote,
-                transform=ax.transAxes, ha='center', fontsize=10, 
-                style='italic', color='#e74c3c', wrap=True,
-                bbox=dict(boxstyle='round,pad=0.7', fc='#fff5f5', alpha=0.8))
+        ax.text(
+            0.5, -0.32, footnote,
+            transform=ax.transAxes,
+            ha='center',
+            va='top',
+            fontsize=10,
+            style='italic',
+            color='#e74c3c',
+            wrap=True,
+            bbox=dict(boxstyle='round,pad=1.3', fc='#fff5f5', alpha=0.8),
+            linespacing=1.2
+        )
+
 
 
 def create_report_figure(evoked_target, evoked_nontarget, sections, 
