@@ -291,48 +291,32 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend='upper right',
+        legend='upper left',
         title=None
     )
-    
-    # Get the line data to convert to microvolts
-    lines = ax.get_lines()
-    for line in lines:
-        ydata = line.get_ydata()
-        line.set_ydata(ydata * 1e6)  # Convert from volts to microvolts
     
     # Highlight analysis window
     ax.axvspan(highlight_window[0], highlight_window[1], 
                color=section['color'], alpha=0.15, 
                label=f'{section["comp"]} Window')
     
-    # Styling with square aspect ratio
+    # Styling
     ax.set_xlim(-0.2, 0.6)
     ax.set_xticks(np.arange(-0.2, 0.7, 0.1))
-    
-    # Set y-axis limits and ticks for clean microvolts display
-    ax.relim()
-    ax.autoscale_view()
-    current_ylim = ax.get_ylim()
-    y_range = max(abs(current_ylim[0]), abs(current_ylim[1]))
-    y_max = np.ceil(y_range / 10) * 10  # Round to nearest 10
-    ax.set_ylim(-y_max, y_max)
-    ax.set_yticks(np.arange(-y_max, y_max + 10, 10))
-    
-    # Make grid square
-    ax.set_aspect('auto')
-    
     ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+    
+    # Better grid with major and minor lines
     ax.grid(True, linestyle=':', alpha=0.4, which='major')
     ax.minorticks_on()
     ax.grid(True, linestyle=':', alpha=0.2, which='minor')
     
-    # No scientific notation, plain numbers
-    ax.ticklabel_format(style='plain', axis='y', useOffset=False)
+    # Get current y-axis ticks and convert to microvolts for display
+    y_ticks = ax.get_yticks()
+    # Convert from volts to microvolts (multiply by 1e6)
+    ax.set_yticklabels([f'{val*1e6:.0f}' for val in y_ticks])
     
-    # Label with microvolts
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
     
@@ -596,7 +580,11 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         if raw is not None or epochs is not None:
             cleanup_resources(raw, epochs, evoked_target, evoked_nontarget)
         
-        return {"error": str(e), "details": error_details}
+        return {
+            "error": str(e), 
+            "details": error_details,
+            "stage": "analysis_failed"
+        }
     
     finally:
         # Clean up temporary files
