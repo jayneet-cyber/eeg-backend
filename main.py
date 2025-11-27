@@ -312,10 +312,18 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.minorticks_on()
     ax.grid(True, linestyle=':', alpha=0.2, which='minor')
     
-    # Get current y-axis ticks and convert to microvolts for display
-    y_ticks = ax.get_yticks()
-    # Convert from volts to microvolts (multiply by 1e6)
-    ax.set_yticklabels([f'{val*1e6:.0f}' for val in y_ticks])
+    # FIX: Disable scientific notation and offset
+    ax.ticklabel_format(style='plain', axis='y', useOffset=False)
+    
+    # Get current y-axis limits to determine the scale
+    y_min, y_max = ax.get_ylim()
+    
+    # Check if values are in volts (small numbers like 1e-5) or already scaled
+    if abs(y_max) < 1e-3:  # Values are in volts, need conversion
+        # Get tick positions and convert to microvolts
+        y_ticks = ax.get_yticks()
+        ax.set_yticklabels([f'{val*1e6:.0f}' for val in y_ticks])
+    # else: values are already in the right scale, leave as is
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
@@ -338,7 +346,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
                 bbox=dict(boxstyle='round,pad=0.5', fc='white', 
                          ec='black', alpha=0.9))
         
-        # Add research footnote
+        # Add research footnote with right margin
         footnote = (
             "* Studies using objective EEG measures show that high cognitive load "
             "is closely related to an increase in task completion time. Furthermore, "
@@ -346,7 +354,8 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
             "confidence, where low confidence ratings often reflect a hard or uncertain "
             "cognitive pursuit."
         )
-        ax.text(0.5, -0.32, footnote,
+        # Position at x=0.5 but add horizontal padding to create margin on right
+        ax.text(0.48, -0.32, footnote,
                 transform=ax.transAxes, ha='center', fontsize=10, 
                 style='italic', color='#e74c3c', wrap=True,
                 bbox=dict(boxstyle='round,pad=0.7', fc='#fff5f5', alpha=0.8))
