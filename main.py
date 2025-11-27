@@ -149,12 +149,25 @@ def parse_experiment_file(exp_path: str):
                 trial_name = parts[1].strip()
                 trial_type = parts[3].strip()
                 
+                # Robustly try to find a trigger code (Column 5 or similar)
+                # In some files it's column 5, in others it might be different.
+                # Based on ega1ff07.exp provided, Column 5 is "12001"
+                try:
+                    trigger_code = parts[5].strip()
+                except:
+                    trigger_code = None
+
                 try:
                     latency = int(parts[6].strip())
                 except:
                     latency = 1000
                 
+                # Map Trial ID (e.g. "1")
                 trial_type_map[trial_id] = trial_type
+                
+                # Also Map Trigger Code (e.g. "12001") if available
+                if trigger_code:
+                    trial_type_map[trigger_code] = trial_type
                 
                 if trial_type == 'R' and latency < 1000:
                     reaction_times.append((latency, trial_id, trial_name))
@@ -184,14 +197,17 @@ def calculate_task_extremes(reaction_times):
 def map_events_to_codes(raw, trial_type_map):
     """
     Map raw annotations to event codes based on trial type.
-    
-    Returns:
-        tuple: (custom_events array, event_ids dict)
+    Includes cleaning of description strings.
     """
     new_events_list = []
+    found_descriptions = set()
     
     for annot in raw.annotations:
-        clean_id = str(annot['description']).strip()
+        # Clean up description (e.g. remove "Stimulus")
+        raw_desc = str(annot['description'])
+        clean_id = raw_desc.replace('Stimulus', '').strip()
+        found_descriptions.add(clean_id)
+        
         trial_type = trial_type_map.get(clean_id, "Unknown")
         
         if trial_type == "Unknown":
@@ -202,7 +218,14 @@ def map_events_to_codes(raw, trial_type_map):
         new_events_list.append([event_sample, 0, code])
     
     if not new_events_list:
-        raise ValueError("No matching events found in .exp file")
+        # Create a helpful error message
+        sample_keys = list(trial_type_map.keys())[:5]
+        sample_events = list(found_descriptions)[:5]
+        raise ValueError(
+            f"No matching events found. "
+            f"EEG file has events: {sample_events}. "
+            f"Experiment file expected: {sample_keys}..."
+        )
     
     custom_events = np.array(new_events_list)
     event_ids = {'Target': 1, 'Non-Target': 2}
@@ -382,7 +405,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
                 transform=ax.transAxes, ha='right', va='bottom', 
                 fontsize=11, color='black',
                 bbox=dict(boxstyle='round,pad=0.5', fc='white', 
-                         ec='black', alpha=0.9))
+                          ec='black', alpha=0.9))
         
         # Add research footnote
         footnote = (
@@ -470,7 +493,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
         else:
             ax_graph = fig.add_subplot(gs[graph_row])
             ax_graph.text(0.5, 0.5, f'Channel {channel} not found', 
-                         ha='center', fontsize=14, color='red')
+                          ha='center', fontsize=14, color='red')
             ax_graph.axis('off')
     
     # Footer metadata
