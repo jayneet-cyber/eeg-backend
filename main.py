@@ -25,7 +25,7 @@ CONFIG = {
     'filter': {
         'low': 0.5,
         'high': 30.0,
-        'n_jobs': 1
+        'n_jobs': 1  # Safer for cloud instances
     },
     'epoch': {
         'tmin': -0.2,
@@ -33,11 +33,11 @@ CONFIG = {
         'baseline': (None, 0)
     },
     'rejection': {
-        'eeg': 100e-6
+        'eeg': 100e-6  # 100 microvolts
     },
     'p300': {
         'search_window': (0.25, 0.6),
-        'score_range': (250, 600),
+        'score_range': (250, 600),  # milliseconds
         'window_duration': 0.2,
         'peak_prominence': 0.5e-6
     },
@@ -56,6 +56,7 @@ CONFIG = {
     }
 }
 
+# Analysis section definitions
 ANALYSIS_SECTIONS = [
     {
         "comp": "P100",
@@ -124,29 +125,48 @@ def save_upload_to_temp(upload_file: UploadFile, suffix: str) -> str:
 
 
 def parse_experiment_file(exp_path: str):
-    """Parse the .exp file to extract trial mappings and reaction times."""
+    """
+    Parse the .exp file to extract trial mappings and reaction times.
+    
+    Returns:
+        tuple: (trial_type_map, reaction_times)
+            - trial_type_map: dict mapping BOTH trial IDs and Trigger Codes to types
+            - reaction_times: list of (latency_ms, trial_id, trial_name) tuples
+    """
     trial_type_map = {}
     reaction_times = []
     
     with open(exp_path, 'r') as f:
         lines = f.readlines()
         
-        for line in lines[8:]:
+        for line in lines[8:]:  # Skip header lines
             parts = line.strip().split('\t')
             if len(parts) < 7:
                 parts = line.strip().split()
             
             if len(parts) >= 7:
-                trial_id = parts[0].strip()
-                trial_name = parts[1].strip()
-                trial_type = parts[3].strip()
+                # Column indices based on your file format
+                trial_id = parts[0].strip()      # '1'
+                trial_name = parts[1].strip()    # 'Underwater Photography'
+                trial_type = parts[3].strip()    # 'R' or 'C'
                 
+                # Column 5 contains the TRIGGER CODE (e.g. '12001')
+                try:
+                    trigger_code = parts[5].strip()
+                except:
+                    trigger_code = None
+
+                # Column 6 contains LATENCY
                 try:
                     latency = int(parts[6].strip())
                 except:
                     latency = 1000
                 
+                # --- KEY FIX: Map BOTH the ID and the Trigger Code ---
+                # This ensures we catch the event whether EEG calls it '1' or '12001'
                 trial_type_map[trial_id] = trial_type
+                if trigger_code:
+                    trial_type_map[trigger_code] = trial_type
                 
                 if trial_type == 'R' and latency < 1000:
                     reaction_times.append((latency, trial_id, trial_name))
@@ -169,11 +189,19 @@ def calculate_task_extremes(reaction_times):
 
 
 def map_events_to_codes(raw, trial_type_map):
-    """Map raw annotations to event codes based on trial type."""
+    """
+    Map raw annotations to event codes based on trial type.
+    Includes robust string cleaning.
+    """
     new_events_list = []
+    found_descriptions = set()
     
     for annot in raw.annotations:
-        clean_id = str(annot['description']).strip()
+        # Clean up description (e.g. remove "Stimulus")
+        raw_desc = str(annot['description'])
+        clean_id = raw_desc.replace('Stimulus', '').strip()
+        found_descriptions.add(clean_id)
+        
         trial_type = trial_type_map.get(clean_id, "Unknown")
         
         if trial_type == "Unknown":
@@ -184,7 +212,14 @@ def map_events_to_codes(raw, trial_type_map):
         new_events_list.append([event_sample, 0, code])
     
     if not new_events_list:
-        return None, None
+        # Generate helpful error message if no matches found
+        sample_eeg = list(found_descriptions)[:5]
+        sample_map = list(trial_type_map.keys())[:5]
+        raise ValueError(
+            f"No matching events found. "
+            f"EEG file has events: {sample_eeg}. "
+            f"Experiment file mapping expects: {sample_map}..."
+        )
     
     custom_events = np.array(new_events_list)
     event_ids = {'Target': 1, 'Non-Target': 2}
@@ -215,6 +250,7 @@ def detect_p300_peak(evoked_target, channel: str):
     data = evoked_target.data[ch_idx, :]
     times = evoked_target.times
     
+    # Extract data within P300 search window
     window_start, window_end = CONFIG['p300']['search_window']
     mask = (times >= window_start) & (times <= window_end)
     
@@ -224,22 +260,20 @@ def detect_p300_peak(evoked_target, channel: str):
     window_data = data[mask]
     window_times = times[mask]
     
-    # Try to find peaks with prominence
-    try:
-        peaks, properties = find_peaks(
-            window_data, 
-            prominence=CONFIG['p300']['peak_prominence']
-        )
-        
-        if len(peaks) > 0:
-            peak_idx = peaks[np.argmax(properties['prominences'])]
-            return window_times[peak_idx]
-    except:
-        pass
+    # Find peaks with minimum prominence to avoid noise
+    peaks, properties = find_peaks(
+        window_data, 
+        prominence=CONFIG['p300']['peak_prominence']
+    )
     
-    # Fallback to simple max
-    peak_idx = np.argmax(window_data)
-    return window_times[peak_idx]
+    if len(peaks) > 0:
+        # Select the most prominent peak
+        peak_idx = peaks[np.argmax(properties['prominences'])]
+        return window_times[peak_idx]
+    else:
+        # Fallback to simple max if no prominent peaks found
+        peak_idx = np.argmax(window_data)
+        return window_times[peak_idx]
 
 
 def calculate_p300_score(peak_latency_seconds: float):
@@ -247,6 +281,7 @@ def calculate_p300_score(peak_latency_seconds: float):
     latency_ms = peak_latency_seconds * 1000
     min_lat, max_lat = CONFIG['p300']['score_range']
     
+    # Linear scoring: faster = better
     raw_score = 100 - ((latency_ms - min_lat) / (max_lat - min_lat) * 100)
     score = max(0, min(100, raw_score))
     
@@ -291,9 +326,12 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend='upper left',
+        legend=False,  # We'll add custom legend
         title=None
     )
+    
+    # Add custom legend with transparency
+    ax.legend(loc='upper left', framealpha=0.8, fontsize=10)
     
     # Highlight analysis window
     ax.axvspan(highlight_window[0], highlight_window[1], 
@@ -333,7 +371,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
                 transform=ax.transAxes, ha='right', va='bottom', 
                 fontsize=11, color='black',
                 bbox=dict(boxstyle='round,pad=0.5', fc='white', 
-                         ec='black', alpha=0.9))
+                          ec='black', alpha=0.9))
         
         # Add research footnote
         footnote = (
@@ -350,7 +388,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
 
 
 def create_report_figure(evoked_target, evoked_nontarget, sections, 
-                         rejection_stats, target_count, nontarget_count):
+                         rejection_stats, balance_note):
     """Generate complete visualization report with all sections."""
     fig = plt.figure(figsize=CONFIG['figure']['size'])
     
@@ -362,7 +400,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
     
     # Header
     ax_header = fig.add_subplot(gs[0])
-    main_title = "Neuro-UX: B2B Dashboard Analysis"
+    main_title = "Neuro-UX Analyzer"
     summary_text = (
         "We analyze your business dashboard versions (Current vs. New) by showing them to users "
         "while they complete common management tasks, like \"Spot the revenue drop.\" Using an "
@@ -400,11 +438,13 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
                 p300_peak_time = detect_p300_peak(evoked_target, channel)
                 
                 if p300_peak_time is not None:
+                    # Adjust window to start at peak
                     highlight_window = (
                         p300_peak_time, 
                         p300_peak_time + CONFIG['p300']['window_duration']
                     )
                     
+                    # Calculate score
                     score, latency_ms = calculate_p300_score(p300_peak_time)
                     p300_score_txt = f"{score:.0f}%"
                     p300_info = {'score': score, 'latency_ms': latency_ms}
@@ -414,20 +454,19 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
         else:
             ax_graph = fig.add_subplot(gs[graph_row])
             ax_graph.text(0.5, 0.5, f'Channel {channel} not found', 
-                         ha='center', fontsize=14, color='red')
+                          ha='center', fontsize=14, color='red')
             ax_graph.axis('off')
     
     # Footer metadata
-    balance_note = " ⚠️ Low trial count" if (target_count < 10 or nontarget_count < 10) else ""
-    
+    stats = rejection_stats
     footer_line1 = (
-        f'Clean Epochs: {rejection_stats["good_epochs"]} '
-        f'(Target: {target_count} | Non-Target: {nontarget_count})'
+        f'Clean Epochs: {stats["good_epochs"]} '
+        f'(Target: {len(evoked_target.nave)} | Non-Target: {len(evoked_nontarget.nave)})'
         f'{balance_note}'
     )
     footer_line2 = (
-        f'Rejected: {rejection_stats["dropped_epochs"]}/{rejection_stats["total_events"]} '
-        f'({rejection_stats["drop_percentage"]:.1f}%) | '
+        f'Rejected: {stats["dropped_epochs"]}/{stats["total_events"]} '
+        f'({stats["drop_percentage"]:.1f}%) | '
         f'Threshold: {CONFIG["rejection"]["eeg"]*1e6:.0f}µV | '
         f'Filter: {CONFIG["filter"]["low"]}-{CONFIG["filter"]["high"]}Hz'
     )
@@ -484,7 +523,13 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         tmp_exp_path = save_upload_to_temp(exp_file, ".exp")
         
         # Load EEG data
-        raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
+        try:
+            raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Failed to load .cnt file: {str(e)}"
+            )
         
         # Parse experiment file
         trial_type_map, reaction_times = parse_experiment_file(tmp_exp_path)
@@ -492,9 +537,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         # Map events to codes
         custom_events, event_ids = map_events_to_codes(raw, trial_type_map)
-        
-        if custom_events is None:
-            return {"error": "No matching events found in .exp file"}
         
         # Apply bandpass filter
         raw.filter(
@@ -544,8 +586,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             evoked_nontarget, 
             ANALYSIS_SECTIONS,
             rejection_stats,
-            target_count,
-            nontarget_count
+            balance_note=""
         )
         
         # Clean up resources
@@ -564,7 +605,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 "drop_percentage": round(rejection_stats['drop_percentage'], 2),
                 "target_epochs": target_count,
                 "nontarget_epochs": nontarget_count,
-                "rejection_threshold": f"{CONFIG['rejection']['eeg']*1e6:.0f}µV"
+                "rejection_threshold_uv": CONFIG['rejection']['eeg'] * 1e6,
+                "filter_range_hz": f"{CONFIG['filter']['low']}-{CONFIG['filter']['high']}"
             }
         }
     
