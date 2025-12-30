@@ -317,16 +317,9 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     """Plot ERP comparison with highlighting and optional P300 scoring."""
     channel = section['ch']
     
-    # CRITICAL FIX: Scale data to microvolts BEFORE plotting
-    evoked_target_uv = evoked_target.copy()
-    evoked_target_uv.data *= 1e6  # Convert volts to microvolts
-    
-    evoked_nontarget_uv = evoked_nontarget.copy()
-    evoked_nontarget_uv.data *= 1e6  # Convert volts to microvolts
-    
-    # Plot ERPs with scaled data
+    # Plot ERPs
     mne.viz.plot_compare_evokeds(
-        {'Target': evoked_target_uv, 'Non-Target': evoked_nontarget_uv},
+        {'Target': evoked_target, 'Non-Target': evoked_nontarget},
         picks=channel,
         axes=ax,
         show=False,
@@ -349,10 +342,11 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.grid(False)  # CHANGE 2: Removed grid lines
     ax.minorticks_on()
     
-    # CHANGE 3: Y-axis already in microvolts, just format as clean integers
+    # CHANGE 3: Convert y-axis to microvolts with normal numbers
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
-    ax.set_yticklabels([f'{int(val)}' for val in y_ticks])  # Simple integer labels
+    # Convert to microvolts and format as integers
+    ax.set_yticklabels([f'{int(val*1e6)}' for val in y_ticks])
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
