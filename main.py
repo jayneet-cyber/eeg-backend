@@ -126,7 +126,11 @@ def save_upload_to_temp(upload_file: UploadFile, suffix: str) -> str:
 def parse_experiment_file(exp_path: str):
     """
     Parse the .exp file to extract trial mappings and reaction times.
-    FIXED: Maps BOTH Trial IDs and Trigger Codes to handle format mismatches.
+    
+    Returns:
+        tuple: (trial_type_map, reaction_times)
+            - trial_type_map: dict mapping BOTH trial IDs and Trigger Codes to types
+            - reaction_times: list of (latency_ms, trial_id, trial_name) tuples
     """
     trial_type_map = {}
     reaction_times = []
@@ -134,7 +138,7 @@ def parse_experiment_file(exp_path: str):
     with open(exp_path, 'r') as f:
         lines = f.readlines()
         
-        for line in lines[8:]: # Skip header lines
+        for line in lines[8:]: # Skip header lines (first 8 lines)
             parts = line.strip().split('\t')
             if len(parts) < 7:
                 parts = line.strip().split()
@@ -147,7 +151,7 @@ def parse_experiment_file(exp_path: str):
                 # Column 3: Type (R/C/M/P)
                 trial_type = parts[3].strip()
                 
-                # Column 5: Trigger Code (e.g., '12001') - CRUCIAL for MNE matching
+                # Column 5: Trigger Code (e.g., '12001') - CRUCIAL for matching EEG
                 try:
                     trigger_code = parts[5].strip()
                 except:
@@ -159,13 +163,12 @@ def parse_experiment_file(exp_path: str):
                 except:
                     latency = 1000
                 
-                # --- FIX: Map BOTH ID AND TRIGGER CODE ---
+                # MAP BOTH ID AND TRIGGER CODE
                 # This ensures we catch the event whether EEG calls it '1' or '12001'
                 trial_type_map[trial_id] = trial_type
                 if trigger_code:
                     trial_type_map[trigger_code] = trial_type
                 
-                # Only log reaction times for identified targets with a button press
                 if trial_type == 'R' and latency < 1000:
                     reaction_times.append((latency, trial_id, trial_name))
     
@@ -189,7 +192,6 @@ def calculate_task_extremes(reaction_times):
 def map_events_to_codes(raw, trial_type_map):
     """
     Map raw annotations to event codes based on trial type.
-    Includes cleaning of description strings.
     """
     new_events_list = []
     found_descriptions = set()
@@ -215,11 +217,10 @@ def map_events_to_codes(raw, trial_type_map):
         # Generate helpful error message if no matches found
         sample_eeg = list(found_descriptions)[:5]
         sample_map = list(trial_type_map.keys())[:5]
-        raise ValueError(
-            f"No matching events found. "
-            f"EEG file has events: {sample_eeg}. "
-            f"Experiment file mapping expects: {sample_map}..."
-        )
+        print(f"DEBUG ERROR: EEG events found: {sample_eeg}")
+        print(f"DEBUG ERROR: Map keys expected: {sample_map}")
+        
+        return None, None
     
     custom_events = np.array(new_events_list)
     event_ids = {'Target': 1, 'Non-Target': 2}
@@ -320,19 +321,16 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     """Plot ERP comparison with highlighting and optional P300 scoring."""
     channel = section['ch']
     
-    # Plot ERPs
+    # PLOT: Pass raw objects (Volts). MNE handles scaling to µV for display.
     mne.viz.plot_compare_evokeds(
         {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
         picks=channel, 
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend=False,  # We'll add custom legend
+        legend='upper right',
         title=None
     )
-    
-    # Add custom legend with transparency
-    ax.legend(loc='upper right', framealpha=0.8, fontsize=10)
     
     # Highlight analysis window
     ax.axvspan(highlight_window[0], highlight_window[1], 
@@ -348,11 +346,8 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.grid(True, linestyle=':', alpha=0.4, which='both')
     ax.minorticks_on()
     
-    # Convert y-axis to microvolts for readability
-    ax.ticklabel_format(style='plain', axis='y')
-    y_ticks = ax.get_yticks()
-    ax.set_yticklabels([f'{val*1e6:.1f}' for val in y_ticks])
-    
+    # Y-Axis Formatting
+    # MNE scales to µV automatically. We just ensure the label matches.
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
     
@@ -542,7 +537,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events, event_ids = map_events_to_codes(raw, trial_type_map)
         
         if custom_events is None:
-            raise HTTPException(status_code=400, detail="No matching events found in .exp file")
+            raise HTTPException(status_code=400, detail="No matching events found in .exp file. Check server logs for details.")
 
         # Apply bandpass filter
         raw.filter(
