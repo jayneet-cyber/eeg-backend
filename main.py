@@ -140,25 +140,32 @@ def parse_experiment_file(exp_path: str):
                 parts = line.strip().split()
             
             if len(parts) >= 7:
+                # Column 0: Trial ID (e.g., '1')
                 trial_id = parts[0].strip()
+                # Column 1: Trial Name
                 trial_name = parts[1].strip()
+                # Column 3: Type (R=Target, C=Non-Target, M/P=Misc)
                 trial_type = parts[3].strip()
                 
+                # Column 5: Trigger Code (e.g., '12001') - CRUCIAL for MNE matching
                 try:
                     trigger_code = parts[5].strip()
                 except:
                     trigger_code = None
 
+                # Column 6: Latency
                 try:
                     latency = int(parts[6].strip())
                 except:
                     latency = 1000
                 
-                # FIX: Map BOTH ID AND TRIGGER CODE
+                # --- FIX: Map BOTH ID AND TRIGGER CODE ---
+                # This ensures we catch the event whether EEG calls it '1' or '12001'
                 trial_type_map[trial_id] = trial_type
                 if trigger_code:
                     trial_type_map[trigger_code] = trial_type
                 
+                # Only log reaction times for identified targets with a button press
                 if trial_type == 'R' and latency < 1000:
                     reaction_times.append((latency, trial_id, trial_name))
     
@@ -180,29 +187,37 @@ def calculate_task_extremes(reaction_times):
 
 
 def map_events_to_codes(raw, trial_type_map):
-    """Map raw annotations to event codes based on trial type."""
+    """
+    Map raw annotations to event codes based on trial type.
+    Includes cleaning of description strings.
+    """
     new_events_list = []
     found_descriptions = set()
     
     for annot in raw.annotations:
+        # Clean up description (e.g. remove "Stimulus", "boundary", etc.)
         raw_desc = str(annot['description'])
         clean_id = raw_desc.replace('Stimulus', '').strip()
         found_descriptions.add(clean_id)
         
+        # Check if the cleaned EEG event ID matches anything in our map
         trial_type = trial_type_map.get(clean_id, "Unknown")
         
         if trial_type == "Unknown":
             continue
         
+        # Assign MNE code: 1=Target (R), 2=Non-Target (C/M/P)
         code = 1 if trial_type == 'R' else 2
         event_sample = raw.time_as_index(annot['onset'])[0]
         new_events_list.append([event_sample, 0, code])
     
     if not new_events_list:
+        # Generate helpful error message if no matches found
         sample_eeg = list(found_descriptions)[:5]
         sample_map = list(trial_type_map.keys())[:5]
         print(f"DEBUG ERROR: EEG events found: {sample_eeg}")
         print(f"DEBUG ERROR: Map keys expected: {sample_map}")
+        
         return None, None
     
     custom_events = np.array(new_events_list)
@@ -243,6 +258,7 @@ def detect_p300_peak(evoked_target, channel: str):
     window_data = data[mask]
     window_times = times[mask]
     
+    # Try to find peaks with minimum prominence to avoid noise
     try:
         peaks, properties = find_peaks(
             window_data, 
@@ -255,6 +271,7 @@ def detect_p300_peak(evoked_target, channel: str):
     except:
         pass
     
+    # Fallback to simple max
     peak_idx = np.argmax(window_data)
     return window_times[peak_idx]
 
@@ -264,6 +281,7 @@ def calculate_p300_score(peak_latency_seconds: float):
     latency_ms = peak_latency_seconds * 1000
     min_lat, max_lat = CONFIG['p300']['score_range']
     
+    # Linear scoring: faster = better
     raw_score = 100 - ((latency_ms - min_lat) / (max_lat - min_lat) * 100)
     score = max(0, min(100, raw_score))
     
@@ -301,14 +319,21 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     """Plot ERP comparison with highlighting and optional P300 scoring."""
     channel = section['ch']
     
-    # Plot ERPs
+    # CRITICAL FIX: Scale data to microvolts BEFORE plotting
+    evoked_target_uv = evoked_target.copy()
+    evoked_target_uv.data *= 1e6  # Convert volts to microvolts
+    
+    evoked_nontarget_uv = evoked_nontarget.copy()
+    evoked_nontarget_uv.data *= 1e6  # Convert volts to microvolts
+    
+    # Plot ERPs with scaled data
     mne.viz.plot_compare_evokeds(
-        {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
+        {'Target': evoked_target_uv, 'Non-Target': evoked_nontarget_uv}, 
         picks=channel, 
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend='upper right',
+        legend='upper right',  # CHANGE 1: Moved to upper right corner
         title=None
     )
     
@@ -323,22 +348,13 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.grid(True, linestyle=':', alpha=0.4, which='both')
+    ax.grid(False)  # CHANGE 2: Removed grid lines
     ax.minorticks_on()
     
-    # FIX: Ensure Y-axis is formatted as simple integers (representing microvolts)
+    # CHANGE 3: Y-axis already in microvolts, just format as clean integers
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
-    # If MNE scaled to uV, values are ~10. If not, ~0.00001.
-    # We check magnitude. If small (< 1), assuming Volts -> Convert. 
-    # If large (> 1), assuming uV -> Just format.
-    
-    if len(y_ticks) > 0 and abs(y_ticks[-1]) < 0.1:
-        # Values are likely in Volts, convert to uV for display
-        ax.set_yticklabels([f'{int(val*1e6)}' for val in y_ticks])
-    else:
-        # Values are likely already uV, just format as int
-        ax.set_yticklabels([f'{int(val)}' for val in y_ticks])
+    ax.set_yticklabels([f'{int(val)}' for val in y_ticks])  # Simple integer labels
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
