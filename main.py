@@ -436,25 +436,24 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
                               section, highlight_window, p300_info)
         else:
             ax_graph = fig.add_subplot(gs[graph_row])
-            ax_graph.text(0.5, 0.5, f'Channel {channel} not found', 
-                          ha='center', fontsize=14, color='red')
+            ax_graph.text(0.5, 0.5, f'Channel {channel} not found', ha='center', fontsize=14, color='red')
             ax_graph.axis('off')
     
     # Footer metadata
-    stats = rejection_stats
-    balance_note = " ⚠️ Low trial count" if (len(evoked_target.nave) < 10 or len(evoked_nontarget.nave) < 10) else ""
-    
-    footer_line1 = (
-        f'Clean Epochs: {stats["good_epochs"]} '
-        f'(Target: {len(evoked_target.nave)} | Non-Target: {len(evoked_nontarget.nave)})'
-        f'{balance_note}'
-    )
-    footer_line2 = (
-        f'Rejected: {stats["dropped_epochs"]}/{stats["total_events"]} '
-        f'({stats["drop_percentage"]:.1f}%) | '
-        f'Threshold: {CONFIG["rejection"]["eeg"]*1e6:.0f}µV | '
-        f'Filter: {CONFIG["filter"]["low"]}-{CONFIG["filter"]["high"]}Hz'
-    )
+        stats = rejection_stats
+        balance_note = " ⚠️ Low trial count" if (evoked_target.nave < 10 or evoked_nontarget.nave < 10) else ""
+        
+        footer_line1 = (
+            f'Clean Epochs: {stats["good_epochs"]} '
+            f'(Target: {evoked_target.nave} | Non-Target: {evoked_nontarget.nave})'
+            f'{balance_note}'
+            )
+        footer_line2 = (
+                f'Rejected: {stats["dropped_epochs"]}/{stats["total_events"]} '
+                f'({stats["drop_percentage"]:.1f}%) | '
+                f'Threshold: {CONFIG["rejection"]["eeg"]*1e6:.0f}µV | '
+                f'Filter: {CONFIG["filter"]["low"]}-{CONFIG["filter"]["high"]}Hz'
+            )
     
     fig.text(0.5, 0.02, footer_line1, ha='center', fontsize=10, color='#7f8c8d')
     fig.text(0.5, 0.005, footer_line2, ha='center', fontsize=9, 
