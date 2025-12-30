@@ -199,7 +199,6 @@ def map_events_to_codes(raw, trial_type_map):
         new_events_list.append([event_sample, 0, code])
     
     if not new_events_list:
-        # Generate helpful error message
         sample_eeg = list(found_descriptions)[:5]
         sample_map = list(trial_type_map.keys())[:5]
         print(f"DEBUG ERROR: EEG events found: {sample_eeg}")
@@ -331,12 +330,8 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
     
-    # --- Y-AXIS FIX START ---
-    # We scaled the data by 1e6 BEFORE plotting (see create_report_figure).
-    # So the values are already like 10.5, 20.1.
-    # We just want to display them as integers (10, 20).
-    ax.set_yticklabels([f'{int(val)}' for val in y_ticks])
-    # --- Y-AXIS FIX END ---
+    # Clean integer scaling: Converts small float volts (0.00001) -> integer microvolts (10)
+    ax.set_yticklabels([f'{int(val*1e6)}' for val in y_ticks])
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
@@ -384,6 +379,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
         hspace=CONFIG['figure']['hspace']
     )
     
+    # Header
     ax_header = fig.add_subplot(gs[0])
     main_title = "Neuro-UX Analyzer"
     summary_text = (
@@ -399,6 +395,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
     )
     create_header_section(ax_header, main_title, summary_text)
     
+    # Section rows
     row_indices = [(1, 2), (3, 4), (5, 6)]
     p300_score_txt = "N/A"
     
@@ -406,20 +403,15 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
         text_row, graph_row = row_indices[i]
         channel = section["ch"]
         
+        # Render text section
         ax_text = fig.add_subplot(gs[text_row])
         create_section_text(ax_text, section)
         
+        # Render graph section
         if channel in evoked_target.ch_names:
             ax_graph = fig.add_subplot(gs[graph_row])
             
-            # --- DATA SCALING HAPPENS HERE ---
-            # Create copies to avoid modifying original
-            evoked_target_uv = evoked_target.copy()
-            evoked_target_uv.data *= 1e6  # Volts -> Microvolts
-            
-            evoked_nontarget_uv = evoked_nontarget.copy()
-            evoked_nontarget_uv.data *= 1e6 # Volts -> Microvolts
-            
+            # Handle dynamic P300 window
             highlight_window = section["window"]
             p300_info = None
             
@@ -427,17 +419,18 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
                 p300_peak_time = detect_p300_peak(evoked_target, channel)
                 
                 if p300_peak_time is not None:
+                    # Adjust window to start at peak
                     highlight_window = (
                         p300_peak_time, 
                         p300_peak_time + CONFIG['p300']['window_duration']
                     )
                     
+                    # Calculate score
                     score, latency_ms = calculate_p300_score(p300_peak_time)
                     p300_score_txt = f"{score:.0f}%"
                     p300_info = {'score': score, 'latency_ms': latency_ms}
             
-            # Plot using the SCALED data (uv)
-            plot_erp_comparison(ax_graph, evoked_target_uv, evoked_nontarget_uv, 
+            plot_erp_comparison(ax_graph, evoked_target, evoked_nontarget, 
                               section, highlight_window, p300_info)
         else:
             ax_graph = fig.add_subplot(gs[graph_row])
@@ -445,6 +438,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
                           ha='center', fontsize=14, color='red')
             ax_graph.axis('off')
     
+    # Footer metadata
     stats = rejection_stats
     balance_note = " ⚠️ Low trial count" if (len(evoked_target.nave) < 10 or len(evoked_nontarget.nave) < 10) else ""
     
@@ -464,6 +458,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
     fig.text(0.5, 0.005, footer_line2, ha='center', fontsize=9, 
              style='italic', color='#95a5a6')
     
+    # Export to base64
     buf = BytesIO()
     plt.savefig(buf, format="png", bbox_inches='tight', 
                 dpi=CONFIG['figure']['dpi'])
@@ -475,6 +470,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
 
 
 def cleanup_resources(raw, epochs, evoked_target, evoked_nontarget):
+    """Clean up memory resources after analysis."""
     try:
         del raw, epochs, evoked_target, evoked_nontarget
         plt.close('all')
@@ -502,11 +498,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
     evoked_nontarget = None
     
     try:
+        # Validate inputs
         validate_uploaded_files(cnt_file, exp_file)
         
+        # Save uploads to temporary files
         tmp_cnt_path = save_upload_to_temp(cnt_file, ".cnt")
         tmp_exp_path = save_upload_to_temp(exp_file, ".exp")
         
+        # Load EEG data
         try:
             raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         except Exception as e:
@@ -515,14 +514,17 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 detail=f"Failed to load .cnt file: {str(e)}"
             )
         
+        # Parse experiment file
         trial_type_map, reaction_times = parse_experiment_file(tmp_exp_path)
         easiest_txt, toughest_txt = calculate_task_extremes(reaction_times)
         
+        # Map events to codes
         custom_events, event_ids = map_events_to_codes(raw, trial_type_map)
         
         if custom_events is None:
             raise HTTPException(status_code=400, detail="No matching events found in .exp file. Check server logs for details.")
 
+        # Apply bandpass filter
         raw.filter(
             CONFIG['filter']['low'], 
             CONFIG['filter']['high'], 
@@ -531,6 +533,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             verbose=False
         )
         
+        # Create epochs with artifact rejection
         epochs = mne.Epochs(
             raw, 
             custom_events, 
@@ -544,11 +547,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             verbose=False
         )
         
+        # Calculate rejection statistics
         rejection_stats = calculate_rejection_stats(len(custom_events), epochs)
         
+        # Check if any epochs survived
         if len(epochs) == 0:
             return {"error": "All trials were rejected due to artifacts (too much noise)."}
         
+        # Check trial balance
         target_count = len(epochs['Target'])
         nontarget_count = len(epochs['Non-Target'])
         
@@ -560,9 +566,11 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             nontarget_count < CONFIG['thresholds']['low_trial_warning']):
             print(f"WARNING: Low trial count may affect reliability")
         
+        # Average epochs to get ERPs
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
         
+        # Generate report figure
         img_str, p300_score_txt = create_report_figure(
             evoked_target, 
             evoked_nontarget, 
@@ -571,6 +579,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             balance_note
         )
         
+        # Clean up resources
         cleanup_resources(raw, epochs, evoked_target, evoked_nontarget)
         
         return {
@@ -596,12 +605,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         error_details = traceback.format_exc()
         print(f"ERROR: {error_details}")
         
+        # Clean up on error
         if raw is not None or epochs is not None:
             cleanup_resources(raw, epochs, evoked_target, evoked_nontarget)
         
         return {"error": str(e), "details": error_details}
     
     finally:
+        # Clean up temporary files
         if tmp_cnt_path and os.path.exists(tmp_cnt_path):
             try:
                 os.remove(tmp_cnt_path)
