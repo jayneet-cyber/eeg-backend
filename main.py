@@ -124,10 +124,7 @@ def save_upload_to_temp(upload_file: UploadFile, suffix: str) -> str:
 
 
 def parse_experiment_file(exp_path: str):
-    """
-    Parse the .exp file to extract trial mappings and reaction times.
-    FIXED: Maps BOTH Trial IDs and Trigger Codes to handle mismatched formats.
-    """
+    """Parse the .exp file to extract trial mappings and reaction times."""
     trial_type_map = {}
     reaction_times = []
     
@@ -154,7 +151,6 @@ def parse_experiment_file(exp_path: str):
                 except:
                     latency = 1000
                 
-                # KEY FIX: Map BOTH the short ID and the long Trigger Code
                 trial_type_map[trial_id] = trial_type
                 if trigger_code:
                     trial_type_map[trigger_code] = trial_type
@@ -199,7 +195,6 @@ def map_events_to_codes(raw, trial_type_map):
         new_events_list.append([event_sample, 0, code])
     
     if not new_events_list:
-        # Create helpful error if mapping fails
         sample_eeg = list(found_descriptions)[:5]
         sample_map = list(trial_type_map.keys())[:5]
         raise ValueError(
@@ -314,11 +309,11 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend=False,
+        legend='upper left',
         title=None
     )
     
-    # Custom Legend
+    # Add custom legend with transparency
     ax.legend(loc='upper right', framealpha=0.8, fontsize=10)
     
     # Highlight analysis window
@@ -335,7 +330,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.grid(True, linestyle=':', alpha=0.4, which='both')
     ax.minorticks_on()
     
-    # Convert y-axis to microvolts
+    # Convert y-axis to microvolts for readability
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
     ax.set_yticklabels([f'{val*1e6:.1f}' for val in y_ticks])
@@ -349,7 +344,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
             verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    # Add P300 score box
+    # Add P300 score box if provided
     if p300_info and section['comp'] == 'P300':
         score_text = (
             f"P300 Latency: {p300_info['latency_ms']:.0f} ms\n"
